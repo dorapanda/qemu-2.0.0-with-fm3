@@ -216,7 +216,7 @@ qemu_irq *armv7m_init(MemoryRegion *address_space_mem,
     memory_region_add_subregion(address_space_mem, 0, flash);
     memory_region_init_ram(sram, NULL, "armv7m.sram", sram_size);
     vmstate_register_ram_global(sram);
-    memory_region_add_subregion(address_space_mem, 0x20000000, sram);
+    memory_region_add_subregion(address_space_mem, 0x1FFF0000, sram);
     armv7m_bitband_init();
 
     nvic = qdev_create(NULL, "armv7m_nvic");

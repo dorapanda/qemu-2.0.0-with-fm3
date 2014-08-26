@@ -12,9 +12,13 @@
 
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#include "hw/ptimer.h"
 #include "hw/arm/arm.h"
+#include "qemu/main-loop.h"
 #include "exec/address-spaces.h"
 #include "gic_internal.h"
+
+#define SYSTICK_USES_PTIMER
 
 typedef struct {
     GICState gic;
@@ -22,13 +26,29 @@ typedef struct {
         uint32_t control;
         uint32_t reload;
         int64_t tick;
+#ifdef SYSTICK_USES_PTIMER
+        ptimer_state *ptimer;
+#else
         QEMUTimer *timer;
+#endif
     } systick;
     MemoryRegion sysregmem;
     MemoryRegion gic_iomem_alias;
     MemoryRegion container;
     uint32_t num_irq;
 } nvic_state;
+
+static uint32_t nvic_readb(nvic_state *s, uint32_t offset);
+static uint32_t nvic_readl(nvic_state *s, uint32_t offset);
+static void nvic_writeb(nvic_state *s, uint32_t offset, uint32_t value);
+static void nvic_writel(nvic_state *s, uint32_t offset, uint32_t value);
+
+/* Only a single "CPU" interface is present.  */
+static inline int
+gic_get_current_cpu(void)
+{
+    return 0;
+}
 
 #define TYPE_NVIC "armv7m_nvic"
 /**
@@ -77,10 +97,17 @@ static inline int64_t systick_scale(nvic_state *s)
 
 static void systick_reload(nvic_state *s, int reset)
 {
+#ifdef SYSTICK_USES_PTIMER
+    ptimer_stop(s->systick.ptimer);
+    ptimer_set_freq(s->systick.ptimer, systick_scale(s));
+    ptimer_set_limit(s->systick.ptimer, s->systick.reload, 0);
+    ptimer_run(s->systick.ptimer, 0);
+#else
     if (reset)
         s->systick.tick = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->systick.tick += (s->systick.reload + 1) * systick_scale(s);
     timer_mod(s->systick.timer, s->systick.tick);
+#endif
 }
 
 static void systick_timer_tick(void * opaque)
@@ -103,7 +130,11 @@ static void systick_reset(nvic_state *s)
     s->systick.control = 0;
     s->systick.reload = 0;
     s->systick.tick = 0;
+#ifdef SYSTICK_USES_PTIMER
+    ptimer_stop(s->systick.ptimer);
+#else
     timer_del(s->systick.timer);
+#endif
 }
 
 /* The external routines use the hardware vector numbering, ie. the first
@@ -138,6 +169,23 @@ void armv7m_nvic_complete_irq(void *opaque, int irq)
     gic_complete_irq(&s->gic, 0, irq);
 }
 
+int armv7m_nvic_get_priority(void *opaque, int irq)
+{
+    GICState *s = &((nvic_state *)opaque)->gic;
+    if (irq >= 16)
+        irq += 16;
+    return GIC_GET_PRIORITY(irq, gic_get_current_cpu());
+}
+
+int armv7m_nvic_get_current_pending(void* opaque)
+{
+    GICState *s = &((nvic_state *)opaque)->gic;
+    int irq = s->current_pending[gic_get_current_cpu()];
+    if (irq >= 32)
+        irq -= 16;
+    return irq;
+}
+
 static uint32_t nvic_readl(nvic_state *s, uint32_t offset)
 {
     ARMCPU *cpu;
@@ -154,7 +202,10 @@ static uint32_t nvic_readl(nvic_state *s, uint32_t offset)
     case 0x14: /* SysTick Reload Value.  */
         return s->systick.reload;
     case 0x18: /* SysTick Current Value.  */
-        {
+#ifdef SYSTICK_USES_PTIMER
+        return ptimer_get_count(s->systick.ptimer);
+#else
+    	{
             int64_t t;
             if ((s->systick.control & SYSTICK_ENABLE) == 0)
                 return 0;
@@ -169,6 +220,7 @@ static uint32_t nvic_readl(nvic_state *s, uint32_t offset)
                 val = 0;
             return val;
         }
+#endif
     case 0x1c: /* SysTick Calibration Value.  */
         return 10000;
     case 0xd00: /* CPUID Base.  */
@@ -290,6 +342,11 @@ static void nvic_writel(nvic_state *s, uint32_t offset, uint32_t value)
         s->systick.control &= 0xfffffff8;
         s->systick.control |= value & 7;
         if ((oldval ^ value) & SYSTICK_ENABLE) {
+#ifdef SYSTICK_USES_PTIMER
+            if (value & SYSTICK_ENABLE) {
+                systick_reload(s, 1);
+            }
+#else
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
             if (value & SYSTICK_ENABLE) {
                 if (s->systick.tick) {
@@ -304,6 +361,7 @@ static void nvic_writel(nvic_state *s, uint32_t offset, uint32_t value)
                 if (s->systick.tick < 0)
                   s->systick.tick = 0;
             }
+#endif
         } else if ((oldval ^ value) & SYSTICK_CLKSOURCE) {
             /* This is a hack. Force the timer to be reloaded
                when the reference clock is changed.  */
@@ -314,7 +372,11 @@ static void nvic_writel(nvic_state *s, uint32_t offset, uint32_t value)
         s->systick.reload = value;
         break;
     case 0x18: /* SysTick Current Value.  Writes reload the timer.  */
+#ifdef SYSTICK_USES_PTIMER
+        ptimer_set_count(s->systick.ptimer, s->systick.reload - value);
+#else
         systick_reload(s, 1);
+#endif
         s->systick.control &= ~SYSTICK_COUNTFLAG;
         break;
     case 0xd04: /* Interrupt Control State.  */
@@ -378,6 +440,36 @@ static void nvic_writel(nvic_state *s, uint32_t offset, uint32_t value)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "NVIC: Bad write offset 0x%x\n", offset);
     }
+}
+
+static uint32_t nvic_readb(nvic_state *s, uint32_t offset)
+{
+    uint32_t retval = 0;
+    uint32_t offset_base = ((offset + 4) & ~3) - 4;
+
+    if (offset < 0xd00) {
+        printf("%s: offset = %x\n", __func__, offset);
+        return 0;
+    }
+    retval = (nvic_readl(s, offset_base) >> (8 * (offset - offset_base))) & 0xff;
+    return retval;
+}
+
+static void nvic_writeb(nvic_state *s, uint32_t offset, uint32_t value)
+{
+    uint32_t offset_base = ((offset + 4) & ~3) - 4;
+    uint32_t tmp;
+    uint32_t shift;
+
+    if (offset < 0xd00) {
+        printf("%s: offset = %x\n", __func__, offset);
+        return;
+    }
+
+    shift = (8 * (offset - offset_base));
+    tmp = nvic_readl(s, offset_base) & ~(0xff << shift);
+    tmp |= (value & 0xff) << shift;
+    nvic_writel(s, offset_base, tmp);
 }
 
 static uint64_t nvic_sysreg_read(void *opaque, hwaddr addr,
@@ -448,7 +540,11 @@ static const VMStateDescription vmstate_nvic = {
         VMSTATE_UINT32(systick.control, nvic_state),
         VMSTATE_UINT32(systick.reload, nvic_state),
         VMSTATE_INT64(systick.tick, nvic_state),
-        VMSTATE_TIMER(systick.timer, nvic_state),
+#ifdef SYSTICK_USES_PTIMER
+        VMSTATE_PTIMER(systick.ptimer, nvic_state),
+#else
+    	VMSTATE_TIMER(systick.timer, nvic_state),
+#endif
         VMSTATE_END_OF_LIST()
     }
 };
@@ -511,7 +607,11 @@ static void armv7m_nvic_realize(DeviceState *dev, Error **errp)
      * by the v7M architecture.
      */
     memory_region_add_subregion(get_system_memory(), 0xe000e000, &s->container);
-    s->systick.timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, systick_timer_tick, s);
+#ifdef SYSTICK_USES_PTIMER
+    s->systick.ptimer = ptimer_init(qemu_bh_new(systick_timer_tick, s));
+#else
+	s->systick.timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, systick_timer_tick, s);
+#endif
 }
 
 static void armv7m_nvic_instance_init(Object *obj)

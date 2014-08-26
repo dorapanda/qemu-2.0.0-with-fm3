@@ -427,6 +427,7 @@ int arm_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int rw,
  */
 #define PSTATE_M (0xFU)
 #define PSTATE_nRW (1U << 4)
+#define PSTATE_T (1U << 5)
 #define PSTATE_F (1U << 6)
 #define PSTATE_I (1U << 7)
 #define PSTATE_A (1U << 8)
@@ -659,6 +660,8 @@ void arm_cpu_list(FILE *f, fprintf_function cpu_fprintf);
 void armv7m_nvic_set_pending(void *opaque, int irq);
 int armv7m_nvic_acknowledge_irq(void *opaque);
 void armv7m_nvic_complete_irq(void *opaque, int irq);
+extern int armv7m_nvic_get_priority(void *opaque, int irq);
+extern int armv7m_nvic_get_current_pending(void* opaque);
 
 /* Interface for defining coprocessor registers.
  * Registers are defined in tables of arm_cp_reginfo structs

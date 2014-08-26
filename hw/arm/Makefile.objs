@@ -8,3 +8,4 @@ obj-y += armv7m.o exynos4210.o pxa2xx.o pxa2xx_gpio.o pxa2xx_pic.o
 obj-$(CONFIG_DIGIC) += digic.o
 obj-y += omap1.o omap2.o strongarm.o
 obj-$(CONFIG_ALLWINNER_A10) += allwinner-a10.o cubieboard.o
+obj-y += fm3.o fm3_board_config.o fm3_cr.o fm3_extint.o fm3_gpio.o fm3_int.o fm3_uart.o fm3_wdt.o

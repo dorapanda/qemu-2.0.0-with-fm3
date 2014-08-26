@@ -122,7 +122,6 @@ static void arm_cpu_reset(CPUState *s)
     if (IS_M(env)) {
         uint32_t pc;
         uint8_t *rom;
-        env->daif &= ~PSTATE_I;
         rom = rom_ptr(0);
         if (rom) {
             /* We should really use ldl_phys here, in case the guest
@@ -134,6 +133,26 @@ static void arm_cpu_reset(CPUState *s)
             env->thumb = pc & 1;
             env->regs[15] = pc & ~1;
         }
+        /* preset to an illegal exception return value */
+        env->regs[14] = 0xffffffff;
+
+        /* The status bits are cleared, which are:
+              - Exception Number
+              - IT/ICI bits
+              - priority mask
+              - fault mask
+              - base priority
+        and T bit set from vector */
+        env->uncached_cpsr = env->thumb? CPSR_T:0;
+        env->v7m.basepri = 0;
+
+        /* Current stack is Main, thread is privileged */
+        env->v7m.control = 0;
+        env->v7m.current_sp = 0;
+        env->v7m.other_sp = 0;
+    } else {
+        /* SVC mode with interrupts disabled.  */
+        env->uncached_cpsr = ARM_CPU_MODE_SVC | CPSR_A | CPSR_F | CPSR_I;
     }
 
     if (env->cp15.c1_sys & SCTLR_V) {

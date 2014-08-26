@@ -75,10 +75,10 @@ static void fm3_init(const char *kernel_filename, const char *cpu_model,
                           irq[15], irq[16], /* ch4 */
                           NULL);
 
-	/* REG Sample */
-    sysbus_create_varargs("fm3.RegSample", 0x41000000,
-                          irq[21],
-                          NULL);
+//	/* REG Sample */
+//    sysbus_create_varargs("fm3.RegSample", 0x41000000,
+//                          irq[21],
+//                          NULL);
 
     /* External memory */
     if (bi->ex_sram_size) {
